@@ -1,1 +1,1 @@
-pyinstaller --noconfirm --onedir --windowed --collect-all customtkinter --icon="app_icon.ico" "app.py"
+pyinstaller --noconfirm --onedir --windowed --collect-all customtkinter --icon="app_icon.ico" "main.py"
