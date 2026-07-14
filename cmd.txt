@@ -1,1 +1,1 @@
-pyinstaller --noconfirm --onedir --windowed --collect-all customtkinter --icon="app_icon.ico" "main.py"
+pyinstaller --noconfirm --noconsole --onefile --collect-all customtkinter --name="Tool_Move_Image" --icon="app_icon.ico" "main.py" 
