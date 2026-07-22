@@ -13,7 +13,9 @@ jobs:
 
     steps:
     - name: Checkout Code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
 
     - name: Cài đặt Python
       uses: actions/setup-python@v4
@@ -24,22 +26,30 @@ jobs:
       run: |
         pip install -r requirements.txt
         pip install pyinstaller
+    
+    - name: Cập nhật Version cho App Python
+      run: |
+        $VER = "${{ github.ref_name }}".TrimStart('v')
+        Set-Content -Path "version.py" -Value "__version__ = '$VER'"
 
     - name: Build file EXE
       run: |
         pyinstaller --noconfirm --noconsole --onefile --collect-all customtkinter --name="Tool_Move_Image" --icon="app_icon.ico" "main.py" 
         # File exe sẽ nằm trong thư mục 'dist'
-
-    - name: Đóng gói bằng Inno Setup
-      # Máy ảo windows-latest của GitHub đã cài sẵn Inno Setup (ISCC)
+    
+    - name: Đóng gói bằng Inno Setup (Truyền Version tự động)
       run: |
-        iscc installer_script.iss
-        # File cài đặt đầu ra sẽ nằm trong thư mục cấu hình trong file .iss của bạn, ví dụ 'Output'
+        # Lấy tên Tag từ GitHub, bỏ chữ 'v' ở đầu
+        $VER = "${{ github.ref_name }}".TrimStart('v')
+        
+        # Truyền biến $VER vào tham số /DMyAppVersion của Inno Setup
+        iscc /DMyAppVersion=$VER installer_script.iss
 
     - name: Tạo GitHub Release và Upload Installer
       uses: softprops/action-gh-release@v1
       with:
         # Đường dẫn tới file cài đặt vừa được Inno Setup tạo ra
-        files: Output/Tool_Move_Image.exe
+        files: Output/*.exe
+        generate_release_notes: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

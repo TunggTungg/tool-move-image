@@ -3,7 +3,9 @@
 ; Non-commercial use only
 
 #define MyAppName "Tool_Move_Image"
-#define MyAppVersion "1.0"
+#ifndef MyAppVersion
+  #define MyAppVersion "1.0.0"
+#endif
 #define MyAppPublisher "Tungg Tungg, Inc."
 #define MyAppExeName "Tool_Move_Image.exe"
 #define SourcePath "dist\Tool_Move_Image.exe"
@@ -33,7 +35,7 @@ ChangesAssociations=yes
 DisableProgramGroupPage=yes
 ; Uncomment the following line to run in non administrative install mode (install for current user only).
 PrivilegesRequired=admin
-OutputBaseFilename=Tool_Move_Image
+OutputBaseFilename=MyImageApp_v{#MyAppVersion}_Setup
 SolidCompression=yes
 WizardStyle=modern dark
 SetupIconFile="app_icon.ico"
