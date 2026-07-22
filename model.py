@@ -3,10 +3,24 @@ import shutil
 import cv2
 import numpy as np
 import time
+from ultralytics.data.augment import LetterBox
 
 class PhotoCopyModel:
-    def __init__(self):
-        pass
+    def __init__(self, imgsz=640, pad_color=114, target_mean=128.0, 
+                 max_gamma_shift=0.4, clahe_clip=1.5, clahe_tile=(8, 8)):
+        self.letterbox = LetterBox(new_shape=(imgsz, imgsz), auto=False, 
+                                     scaleup=True, 
+                                     center=True, stride=32)
+        self.pad_color = pad_color
+        self.target_mean = target_mean
+        self.max_gamma_shift = max_gamma_shift
+        self.update_clahe_config(clahe_clip, clahe_tile)
+
+    def update_clahe_config(self, clahe_clip, clahe_tile):
+        """Cập nhật thông số CLAHE động từ giao diện người dùng."""
+        self.clahe_clip = float(clahe_clip)
+        self.clahe_tile = tuple(clahe_tile)
+        self.clahe = cv2.createCLAHE(clipLimit=self.clahe_clip, tileGridSize=self.clahe_tile)
 
     def scan_images(self, src_root, allowed_types, stop_checker):
         files_to_copy = []
@@ -23,50 +37,48 @@ class PhotoCopyModel:
     # =========================================================================
     # KHO CHỨA CÁC HÀM TIỀN XỬ LÝ (PREPROCESSING MODULES)
     # =========================================================================
+    def _build_gamma_lut(self, gamma):
+        """Build LUT 256 phần tử cho gamma correction."""
+        indices = np.arange(256, dtype=np.float32)
+        lut = np.clip((indices / 255.0) ** gamma * 255.0, 0, 255).astype(np.uint8)
+        return lut
 
     def _preprocess_tone_clahe(self, img, metrics):
-        """
-        Hàm xử lý số 1: Tone Mapping + CLAHE
-        Nhận vào ảnh gốc và dict metrics để cập nhật thời gian chi tiết của từng bước.
-        Trả về: Ảnh sau xử lý.
-        """
+        """Hàm xử lý Tone Mapping + CLAHE."""
+        # --- BƯỚC 1: LETTERBOX BẰNG ULTRALYTICS ---
+        orig_h, orig_w = img.shape[:2]
+        letterboxed = self.letterbox(image=img)
+        
+        new_h, new_w = letterboxed.shape[:2]
+        scale = min(new_h / orig_h, new_w / orig_w)
+        resized_h, resized_w = round(orig_h * scale), round(orig_w * scale)
+        pad_h, pad_w = (new_h - resized_h) / 2, (new_w - resized_w) / 2
+        top, left = int(round(pad_h - 0.1)), int(round(pad_w - 0.1))
 
-        # --- BƯỚC 1: TONE MAPPING ---
+        # --- BƯỚC 2: TONE MAPPING ADAPTIVE ---
         t_tone = time.perf_counter()
-        lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+        lab = cv2.cvtColor(letterboxed, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
-        l_float = l.astype(np.float32) / 255.0
-        l_tonemapped = l_float / (l_float + 0.2)
-        l_gamma = np.power(l_tonemapped, 1.0 / 1.2)
 
-        # Khôi phục lại định dạng 8-bit chuẩn
-        l_toned_8bit = np.clip(l_gamma * 255.0, 0, 255).astype(np.uint8)
+        l_content = l[top:top + resized_h, left:left + resized_w]
+        current_mean = float(np.mean(l_content)) if l_content.size > 0 else float(np.mean(l))
+        current_mean_clamped = np.clip(current_mean, 20, 235)
+
+        ideal_gamma = np.log(self.target_mean / 255.0) / np.log(current_mean_clamped / 255.0)
+        gamma = np.clip(ideal_gamma, 1.0 - self.max_gamma_shift, 1.0 + self.max_gamma_shift)
+
+        lut = self._build_gamma_lut(gamma)
+        l_toned = cv2.LUT(l, lut)
         metrics["tonemap_time"] = time.perf_counter() - t_tone
         
-        # --- BƯỚC 2: LAB + CLAHE ---
+        # --- BƯỚC 3: CLAHE ---
         t_clahe = time.perf_counter()
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(32, 32))
-        l_final = clahe.apply(l_toned_8bit)
+        l_final = self.clahe.apply(l_toned)
         final_lab = cv2.merge((l_final, a, b))
         result = cv2.cvtColor(final_lab, cv2.COLOR_LAB2BGR)
 
         metrics["clahe_time"] = time.perf_counter() - t_clahe
-
         return result
-
-    def _preprocess_future_style(self, img, metrics):
-        """
-        [Ví dụ] Hàm xử lý số 2: Sau này bạn muốn thêm bộ lọc khác (Ví dụ: chuyển ảnh xám, làm nét...)
-        Chỉ cần viết ở đây và gọi nó trong hàm copy_single_file.
-        """
-        # t_start = time.perf_counter()
-        # logic xử lý của bạn...
-        # metrics["future_process_time"] = time.perf_counter() - t_start
-        return img
-
-    # =========================================================================
-    # HÀM QUẢN LÝ ĐIỀU PHỐI I/O VÀ LOGIC COPY
-    # =========================================================================
 
     def copy_single_file(self, file_path, dest_root, stop_checker, apply_preprocessing):
         metrics = {
@@ -87,26 +99,20 @@ class PhotoCopyModel:
             filename = os.path.basename(file_path)
             dest_path = os.path.join(dest_root, filename)
 
-            # Xử lý trùng tên file
-            base, extension = os.path.splitext(filename)
             counter = 1
+            base, extension = os.path.splitext(filename)
             while os.path.exists(dest_path):
                 dest_path = os.path.join(dest_root, f"{base}_{counter}{extension}")
                 counter += 1
 
-            # NẾU CÓ TIỀN XỬ LÝ
             if apply_preprocessing:
                 t_read = time.perf_counter()
                 img = cv2.imread(file_path)
                 metrics["read_time"] = time.perf_counter() - t_read
 
                 if img is not None:
-                    # >>> GỌI HÀM TIỀN XỬ LÝ ĐÃ ĐƯỢC TÁCH RIÊNG Ở ĐÂY <<<
-                    # Sau này nếu có nhiều option, bạn có thể truyền tham số `preprocess_type` 
-                    # để dùng câu lệnh if-else chọn hàm xử lý tương ứng cực kỳ linh hoạt.
                     result = self._preprocess_tone_clahe(img, metrics)
 
-                    # Ghi file xuống đĩa (đã tối ưu nén để tăng tốc cho USB)
                     t_write = time.perf_counter()
                     if dest_path.lower().endswith(('.jpg', '.jpeg')):
                         cv2.imwrite(dest_path, result, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
@@ -120,15 +126,12 @@ class PhotoCopyModel:
                     metrics["detail"] = f"[Processed & Copied] {filename}"
                     return "success", metrics
                 else:
-                    # Nếu OpenCV lỗi không đọc được, hạ cấp xuống copy thuần
                     t_write = time.perf_counter()
                     shutil.copy2(file_path, dest_path)
                     metrics["write_time"] = time.perf_counter() - t_write
                     metrics["total_time"] = time.perf_counter() - t_start
                     metrics["detail"] = f"[Backup Copied] {filename} (OpenCV Read Failed)"
                     return "success", metrics
-            
-            # NẾU KHÔNG CÓ TIỀN XỬ LÝ (Pure Copy)
             else:
                 t_write = time.perf_counter()
                 shutil.copy2(file_path, dest_path)

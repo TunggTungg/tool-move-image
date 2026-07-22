@@ -1,9 +1,10 @@
 import os
 import threading
 import psutil
+import json
 from concurrent.futures import ThreadPoolExecutor
 from model import PhotoCopyModel
-import json 
+
 HIDDEN_CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".photocopy_tool_cache")
 
 class PhotoCopyViewModel:
@@ -36,30 +37,36 @@ class PhotoCopyViewModel:
             self.stop_requested = True
             self.log("WARNING: Stop signal sent! Wrapping up active threads...", "warning")
 
-    def save_paths(self, input_dir, output_dir):
-        """Lưu đường dẫn vào file ẩn của hệ thống, không sinh file rác tại thư mục app"""
+    def save_config(self, input_dir, output_dir, clahe_clip, clahe_tile):
+        """Lưu đường dẫn và thông số CLAHE vào file ẩn dạng JSON."""
         try:
-            # Tạo dictionary chứa dữ liệu cần lưu
             config_data = {
                 "input_dir": input_dir,
-                "output_dir": output_dir
+                "output_dir": output_dir,
+                "clahe_clip": clahe_clip,
+                "clahe_tile": clahe_tile
             }
-            # Ghi đè vào file ẩn dưới dạng JSON
             with open(HIDDEN_CONFIG_PATH, "w", encoding="utf-8") as f:
                 json.dump(config_data, f, ensure_ascii=False, indent=4)
-        except Exception as e:
+        except Exception:
             pass
 
-    def load_saved_paths(self):
-        """Tải đường dẫn từ thư mục ẩn hệ thống"""
+    def load_saved_config(self):
+        """Tải đường dẫn và cài đặt CLAHE từ file ẩn."""
+        default_config = {
+            "input_dir": "",
+            "output_dir": "",
+            "clahe_clip": "1.5",
+            "clahe_tile": "8x8"
+        }
         if os.path.exists(HIDDEN_CONFIG_PATH):
             try:
                 with open(HIDDEN_CONFIG_PATH, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    return data.get("input_dir", ""), data.get("output_dir", "")
+                    default_config.update(data)
             except Exception:
                 pass
-        return "", ""
+        return default_config
 
     def execute_delete(self, dest_root):
         if not dest_root:
@@ -79,13 +86,27 @@ class PhotoCopyViewModel:
             self.log(f"ERROR while cleaning directory: {str(e)}", "error")
             return False
 
-    def start_copy_pipeline(self, src_root, dest_root, include_original, include_processed, apply_preprocessing):
+    def start_copy_pipeline(self, src_root, dest_root, include_original, include_processed, 
+                            apply_preprocessing, clahe_clip, clahe_tile_str):
         if not src_root or not dest_root:
             self.log("ERROR: Please select both Input and Output folders!", "error")
             return
         if not include_original and not include_processed:
             self.log("ERROR: You must select at least one folder type (Original or Processed)!", "error")
             return
+
+        # Parse thông số CLAHE
+        try:
+            clip_val = float(clahe_clip)
+            tile_dim = int(clahe_tile_str.split('x')[0])
+            tile_tuple = (tile_dim, tile_dim)
+        except ValueError:
+            self.log("ERROR: Invalid CLAHE parameters! Resetting to default (1.5, 8x8).", "error")
+            clip_val = 1.5
+            tile_tuple = (8, 8)
+
+        # Cập nhật thông số vào Model
+        self.model.update_clahe_config(clip_val, tile_tuple)
 
         self.is_running = True
         self.stop_requested = False
@@ -102,38 +123,23 @@ class PhotoCopyViewModel:
         ).start()
 
     def _is_usb_or_removable(self, path):
-        """
-        A function that checks whether a path is located on a USB drive or a removable drive.
-        """
         try:
-            # Lấy đường dẫn tuyệt đối chuẩn hóa
             abs_path = os.path.abspath(path)
-            
-            # Quét qua toàn bộ các ổ đĩa/phân vùng đang kết nối vào máy tính
             partitions = psutil.disk_partitions(all=True)
-            
-            # Sắp xếp các phân vùng theo độ dài ký tự giảm dần để khớp chính xác nhất (VD: F:\\ trước F:\\Folder)
             partitions.sort(key=lambda x: len(x.mountpoint), reverse=True)
             
             for p in partitions:
-                # Kiểm tra xem đường dẫn đích có bắt đầu bằng tên ổ đĩa này không
                 if abs_path.startswith(p.mountpoint):
-                    # 'removable' đại diện cho USB, Thẻ nhớ, Ổ đĩa di động cắm ngoài
                     if 'removable' in p.opts or 'cdrom' in p.opts:
                         return True
-                    
-                    # Backup check cho Windows: Ổ USB thường không có tùy chọn 'removable' trong p.opts ở một số bản cập nhật
-                    # nhưng nó sẽ chứa thuộc tính hệ thống hoặc nằm ngoài phân vùng mặc định (C, D nội bộ)
-                    if os.name == 'nt': # Nếu là Windows
-                        import win32file # Thư viện đi kèm mặc định nếu dùng môi trường chuẩn
+                    if os.name == 'nt':
+                        import win32file
                         drive_type = win32file.GetDriveType(p.mountpoint)
                         if drive_type == win32file.DRIVE_REMOVABLE:
                             return True
                     break
             return False
         except Exception:
-            # Nếu có lỗi (hoặc không có thư viện win32file), dùng giải pháp loại trừ an toàn:
-            # Trên Mac/Linux, USB thường nằm trong thư mục /Volumes hoặc /media
             if "/Volumes/" in abs_path or "/media/" in abs_path:
                 return True
             return False
@@ -155,24 +161,18 @@ class PhotoCopyViewModel:
             self._terminate_process(0, 0, total_files)
             return
 
-        # --- 🚀 Cải tiến: TỰ ĐỘNG ĐIỀU CHỈNH LUỒNG (WORKERS) DỰA TRÊN THIẾT BỊ ĐÍCH ---
         is_usb = self._is_usb_or_removable(dest_root)
-        
-        if is_usb:
-            # Nếu ghi vào USB: Ép xuống 1 hoặc tối đa 2 luồng để tránh nghẽn I/O làm đứng hệ thống
-            active_threads = 1 
-            self.log("⚠️ DETECTED REMOVABLE DRIVE (USB): Thread count locked to 1 to maximize hardware write speed.", "warning")
-        else:
-            # Nếu ghi vào SSD/HDD nội bộ (C:, D:): Giữ nguyên số luồng tối ưu (4-8 luồng)
-            active_threads = self.optimal_threads
+        active_threads = 1 if is_usb else self.optimal_threads
 
-        mode_str = "with Advanced Preprocessing" if apply_preprocessing else "pure copy mode"
-        self.log(f"Found {total_files} images. Spawning {active_threads} worker threads running in {mode_str}...")
+        if is_usb:
+            self.log("⚠️ DETECTED REMOVABLE DRIVE (USB): Thread count locked to 1 to maximize hardware write speed.", "warning")
+
+        mode_str = f"Preprocessing [Clip: {self.model.clahe_clip}, Tile: {self.model.clahe_tile[0]}x{self.model.clahe_tile[1]}]" if apply_preprocessing else "pure copy mode"
+        self.log(f"Found {total_files} images. Spawning {active_threads} worker threads ({mode_str})...")
 
         copied_count = 0
         success_count = 0
 
-        # Thay thế self.optimal_threads bằng biến active_threads vừa tính toán
         with ThreadPoolExecutor(max_workers=active_threads) as executor:
             futures = [executor.submit(self.model.copy_single_file, path, dest_root, self.check_stop, apply_preprocessing) for path in files_to_copy]
             
@@ -194,7 +194,7 @@ class PhotoCopyViewModel:
                     else:
                         pure_log = (
                             f"[{copied_count}/{total_files}] {metrics['filename']} copied in {metrics['total_time']:.3f}s | "
-                            f"Read/Prep: 0.000s | CLAHE: 0.000s | ToneMap: 0.000s | Write: {metrics['write_time']:.3f}s"
+                            f"Write: {metrics['write_time']:.3f}s"
                         )
                         self.log(pure_log, "info")
                         
