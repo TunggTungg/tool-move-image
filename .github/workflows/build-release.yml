@@ -1,0 +1,45 @@
+name: Build and Release App
+
+# Chỉ kích hoạt tự động chạy khi bạn push một tag mới (ví dụ: v1.0.1)
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-release:
+    # Mượn một máy ảo Windows từ GitHub (vì Inno Setup chỉ chạy trên Windows)
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v3
+
+    - name: Cài đặt Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10' # Sửa lại theo phiên bản bạn dùng
+
+    - name: Cài đặt thư viện
+      run: |
+        pip install -r requirements.txt
+        pip install pyinstaller
+
+    - name: Build file EXE
+      run: |
+        pyinstaller --noconfirm --noconsole --onefile --collect-all customtkinter --name="Tool_Move_Image" --icon="app_icon.ico" "main.py" 
+        # File exe sẽ nằm trong thư mục 'dist'
+
+    - name: Đóng gói bằng Inno Setup
+      # Máy ảo windows-latest của GitHub đã cài sẵn Inno Setup (ISCC)
+      run: |
+        iscc installer_script.iss
+        # File cài đặt đầu ra sẽ nằm trong thư mục cấu hình trong file .iss của bạn, ví dụ 'Output'
+
+    - name: Tạo GitHub Release và Upload Installer
+      uses: softprops/action-gh-release@v1
+      with:
+        # Đường dẫn tới file cài đặt vừa được Inno Setup tạo ra
+        files: Output/Tool_Move_Image.exe
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
