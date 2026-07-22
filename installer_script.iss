@@ -35,7 +35,7 @@ ChangesAssociations=yes
 DisableProgramGroupPage=yes
 ; Uncomment the following line to run in non administrative install mode (install for current user only).
 PrivilegesRequired=admin
-OutputBaseFilename=MyImageApp_v{#MyAppVersion}_Setup
+OutputBaseFilename={#MyAppName}_v{#MyAppVersion}_Setup
 SolidCompression=yes
 WizardStyle=modern dark
 SetupIconFile="app_icon.ico"
