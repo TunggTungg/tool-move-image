@@ -3,7 +3,7 @@ model.py
 --------
 Model layer in the MVVM architecture.
 Handles raw image processing, folder scanning, file copying, tone mapping, 
-and CLAHE enhancement routines.
+and CLAHE enhancement routines without external object detection dependencies.
 """
 
 import os
@@ -11,7 +11,90 @@ import shutil
 import cv2
 import numpy as np
 import time
-from ultralytics.data.augment import LetterBox
+
+
+class LetterBoxStandalone:
+    """
+    Standalone implementation replicating ultralytics.data.augment.LetterBox functionality
+    without requiring ultralytics library installation.
+    Maintains aspect ratio and applies uniform padding for image resizing.
+
+    Attributes:
+        new_shape (tuple): Target image dimensions (height, width).
+        color (tuple): Border padding color tuple in (B, G, R) format.
+        auto (bool): Minimum rectangle padding flag.
+        scaleFill (bool): Stretch image to fill shape without maintaining aspect ratio.
+        scaleup (bool): Allow scaling up smaller images.
+        stride (int): Padding alignment stride divisor.
+        center (bool): Center alignment flag for padding distribution.
+    """
+
+    def __init__(self, new_shape=(640, 640), color=(114, 114, 114),
+                 auto=False, scaleFill=False, scaleup=True, stride=32, center=True):
+        """
+        Initializes LetterBoxStandalone with target shape and padding configurations.
+
+        Args:
+            new_shape (tuple or int, optional): Target dimensions (height, width). Defaults to (640, 640).
+            color (tuple or int, optional): Border fill color. Defaults to (114, 114, 114).
+            auto (bool, optional): Minimum rectangular padding flag. Defaults to False.
+            scaleFill (bool, optional): Scale to fill target grid without padding. Defaults to False.
+            scaleup (bool, optional): Allow scaling images up. Defaults to True.
+            stride (int, optional): Stride size for alignment. Defaults to 32.
+            center (bool, optional): Center padding flag. Defaults to True.
+        """
+        self.new_shape = new_shape if isinstance(new_shape, tuple) else (new_shape, new_shape)
+        self.color = color if isinstance(color, tuple) else (color, color, color)
+        self.auto = auto
+        self.scaleFill = scaleFill
+        self.scaleup = scaleup
+        self.stride = stride
+        self.center = center
+
+    def __call__(self, img):
+        """
+        Executes letterbox resizing and padding on input image matrix.
+
+        Args:
+            img (numpy.ndarray): Input image array (H, W, C).
+
+        Returns:
+            tuple[numpy.ndarray, tuple, tuple]: 
+                - Processed letterboxed image matrix.
+                - Scale ratios tuple (r_w, r_h).
+                - Top-left offset tuple (left, top).
+        """
+        shape = img.shape[:2]  # Current shape (h, w)
+        new_shape = self.new_shape
+
+        r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
+        if not self.scaleup:
+            r = min(r, 1.0)
+
+        ratio = r, r
+        new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))  # (w, h)
+        dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]
+
+        if self.auto:
+            dw, dh = np.mod(dw, self.stride), np.mod(dh, self.stride)
+        elif self.scaleFill:
+            dw, dh = 0.0, 0.0
+            new_unpad = (new_shape[1], new_shape[0])
+            ratio = new_shape[1] / shape[1], new_shape[0] / shape[0]
+
+        if self.center:
+            dw /= 2
+            dh /= 2
+
+        if shape[::-1] != new_unpad:
+            img = cv2.resize(img, new_unpad, interpolation=cv2.INTER_LINEAR)
+
+        top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
+        left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
+
+        img = cv2.copyMakeBorder(img, top, bottom, left, right,
+                                   cv2.BORDER_CONSTANT, value=self.color)
+        return img, ratio, (left, top)
 
 
 class PhotoCopyModel:
@@ -19,7 +102,7 @@ class PhotoCopyModel:
     Core data processing class for scanning, preprocessing, and writing image files.
 
     Attributes:
-        letterbox (LetterBox): Ultralytics LetterBox instance for resizing while keeping aspect ratio.
+        letterbox (LetterBoxStandalone): Standalone LetterBox instance for image resizing.
         pad_color (int): Padding color value for letterboxing.
         target_mean (float): Target mean brightness value for tone adjustment.
         max_gamma_shift (float): Maximum allowed shift bound for gamma correction.
@@ -41,9 +124,15 @@ class PhotoCopyModel:
             clahe_clip (float, optional): Initial CLAHE clip threshold limit. Defaults to 1.5.
             clahe_tile (tuple, optional): Initial CLAHE tile grid size dimensions. Defaults to (8, 8).
         """
-        self.letterbox = LetterBox(new_shape=(imgsz, imgsz), auto=False, 
-                                     scaleup=True, 
-                                     center=True, stride=32)
+        color_tuple = (pad_color, pad_color, pad_color) if isinstance(pad_color, int) else pad_color
+        self.letterbox = LetterBoxStandalone(
+            new_shape=(imgsz, imgsz), 
+            color=color_tuple, 
+            auto=False, 
+            scaleup=True, 
+            center=True, 
+            stride=32
+        )
         self.pad_color = pad_color
         self.target_mean = target_mean
         self.max_gamma_shift = max_gamma_shift
@@ -124,7 +213,7 @@ class PhotoCopyModel:
             numpy.ndarray: Enhanced output image matrix in BGR format.
         """
         orig_h, orig_w = img.shape[:2]
-        letterboxed = self.letterbox(image=img)
+        letterboxed, _, _ = self.letterbox(img)
         
         new_h, new_w = letterboxed.shape[:2]
         scale = min(new_h / orig_h, new_w / orig_w)

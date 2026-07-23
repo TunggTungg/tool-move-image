@@ -251,6 +251,11 @@ class PhotoCopyView(ctk.CTk):
         self.chk_original.configure(state=state)
         self.chk_processed.configure(state=state)
 
+        # Automatically untick 'Overwrite directly in Input Folder' when selecting Filter Subfolders mode
+        if is_subfolder_mode:
+            self.chk_overwrite_inplace_var.set(False)
+            self.toggle_output_folder_ui()
+
     def toggle_clahe_inputs(self):
         """Enables or disables CLAHE setting input fields based on preprocessing toggle."""
         state = "normal" if self.chk_preprocess_var.get() else "disabled"
